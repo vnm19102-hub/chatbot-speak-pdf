@@ -10,9 +10,17 @@ import os
 # CONFIG
 # =========================
 # Get API key from environment (best practice for Streamlit Cloud)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "gsk_your_api_key_here")
-client = Groq(api_key=GROQ_API_KEY)
+# Get Groq API key securely
+try:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except Exception:
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
+if not GROQ_API_KEY:
+    st.error("Groq API key is not configured.")
+    st.stop()
+
+client = Groq(api_key=GROQ_API_KEY)
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
 # =========================
@@ -47,49 +55,130 @@ def search_docs(query, index, docs, top_k=3):
 # =========================
 # ASK LLM
 # =========================
-def ask_llm(question, context):
-    prompt = f"""
-You are a helpful assistant. Answer in detail.
+def ask_llm(question, context, chat_history):
+    history_text = ""
 
-Context from documents:
+    for message in chat_history:
+        history_text += f"{message['role'].capitalize()}: {message['content']}\n"
+
+    prompt = f"""
+You are a helpful assistant that answers questions using the uploaded PDF documents.
+
+Previous conversation:
+{history_text}
+
+Relevant information from the PDF:
 {context}
 
-Question:
+Current question:
 {question}
 
-Answer with clear explanation and examples where possible.
-    """
+Answer clearly and accurately based on the PDF.
+If the question refers to something from the previous conversation,
+use the conversation history to understand what the user means.
+"""
+
     response = client.chat.completions.create(
-        model="llama3-70b-8192",
-        messages=[{"role": "user", "content": prompt}],
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
         max_tokens=600,
         temperature=0.7
     )
-    return response.choices[0].message.content
 
+    return response.choices[0].message.content
 # =========================
 # STREAMLIT UI
 # =========================
 st.set_page_config(page_title="PDF Chatbot", layout="wide")
 st.title("📘 AI PDF Chatbot (Groq LLaMA-3)")
 
-uploaded_files = st.file_uploader("Upload your PDFs", type="pdf", accept_multiple_files=True)
+uploaded_files = st.file_uploader(
+    "Upload your PDFs",
+    type="pdf",
+    accept_multiple_files=True
+)
 
 if uploaded_files:
-    st.success("✅ PDFs uploaded successfully. You can now ask questions.")
+
+    st.success("PDFs uploaded successfully. You can now ask questions.")
+
     docs = extract_text_from_pdfs(uploaded_files)
     index, doc_store = create_faiss_index(docs)
 
-    user_question = st.text_input("Ask a question from the PDFs:")
+    # Create chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        
+    if st.button("Clear Chat"):
+    st.session_state.messages = []
+    st.rerun()
 
-    if st.button("Get Answer") and user_question:
-        results = search_docs(user_question, index, doc_store)
-        context = "\n\n".join([f"[{doc[2]} - Page {doc[1]}]\n{doc[0]}" for doc in results])
-        answer = ask_llm(user_question, context)
+    # Display previous conversation
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.write(message["content"])
 
-        st.subheader("📖 Answer")
-        st.write(answer)
+    # Chat input
+    user_question = st.chat_input("Ask a question about your PDFs...")
 
-        st.subheader("🔍 Sources")
-        for r in results:
-            st.markdown(f"- **{r[2]} (Page {r[1]})**")
+    if user_question:
+
+        # Show user's question
+        with st.chat_message("user"):
+            st.write(user_question)
+
+        # Search the PDF
+        results = search_docs(
+            user_question,
+            index,
+            doc_store
+        )
+
+        context = "\n\n".join(
+            [
+                f"[{doc[2]} - Page {doc[1]}]\n{doc[0]}"
+                for doc in results
+            ]
+        )
+
+        # Generate answer
+        try:
+            answer = ask_llm(
+                user_question,
+                context,
+                st.session_state.messages
+            )
+
+        except Exception as e:
+            st.error(
+                "Unable to generate an answer. Please check the Groq API configuration."
+            )
+            st.stop()
+
+        # Show AI answer
+        with st.chat_message("assistant"):
+            st.write(answer)
+
+        # Save conversation
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": user_question
+            }
+        )
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": answer
+            }
+        )
+
+        # Show sources
+        with st.expander("Sources"):
+            for r in results:
+                st.markdown(
+                    f"- **{r[2]} — Page {r[1]}**"
+                )
