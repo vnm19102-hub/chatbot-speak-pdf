@@ -110,10 +110,11 @@ if uploaded_files:
     # Create chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
-        
     if st.button("Clear Chat"):
-    st.session_state.messages = []
-    st.rerun()
+        st.session_state.messages = []
+        st.rerun()
+
+
 
     # Display previous conversation
     for message in st.session_state.messages:
